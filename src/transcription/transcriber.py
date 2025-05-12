@@ -1,5 +1,5 @@
 """
-Transcriber module for converting audio to text.
+API-based transcriber module for converting audio to text using OpenAI's API.
 """
 import os
 import tempfile
@@ -10,10 +10,11 @@ from loguru import logger
 import openai
 from tqdm import tqdm
 
+from .base_transcriber import BaseTranscriber
 from .models import TranscriptionOptions, TranscriptionResult, Segment
 
 
-class Transcriber:
+class APITranscriber(BaseTranscriber):
     """
     Handles transcription of audio files to text using OpenAI's API.
     
@@ -23,14 +24,14 @@ class Transcriber:
     
     def __init__(self, options: Optional[TranscriptionOptions] = None):
         """
-        Initialize the Transcriber.
+        Initialize the APITranscriber.
         
         Args:
             options (Optional[TranscriptionOptions]): Options for controlling the transcription.
                 Defaults to None, which uses default settings.
         """
-        self.options = options or TranscriptionOptions()
-        logger.info(f"Initializing Transcriber with options: {self.options}")
+        super().__init__(options)
+        logger.info(f"Initializing APITranscriber with options: {self.options}")
         
         # Check for API key
         if not os.getenv("OPENAI_API_KEY"):
