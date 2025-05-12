@@ -12,7 +12,7 @@ from ..observability.telemetry import telemetry, observe_function
 
 from ..audio.converter import AudioConverter
 from ..audio.processor import AudioProcessor
-from ..transcription.transcriber import Transcriber
+from ..transcription.factory import get_transcriber
 from ..transcription.models import TranscriptionOptions
 from ..llm.processor import LLMProcessor, ProcessingOptions
 
@@ -29,6 +29,10 @@ class AgentOptions(BaseModel):
         default=False, 
         description="Whether to save intermediate files"
     )
+    transcription_mode: str = Field(
+        default="llm", 
+        description="Transcription mode (llm, local)"
+    )
     transcription_options: Optional[TranscriptionOptions] = Field(
         default=None, 
         description="Options for the transcription process"
@@ -36,6 +40,10 @@ class AgentOptions(BaseModel):
     processing_options: Optional[ProcessingOptions] = Field(
         default=None, 
         description="Options for the LLM processing"
+    )
+    skip_llm_processing: bool = Field(
+        default=False,
+        description="Whether to skip LLM processing and return raw transcription"
     )
 
 
@@ -70,7 +78,10 @@ class VoiceToTextAgent:
         # Initialize components
         self.audio_converter = AudioConverter()
         self.audio_processor = AudioProcessor()
-        self.transcriber = Transcriber(options=self.options.transcription_options)
+        self.transcriber = get_transcriber(
+            mode=self.options.transcription_mode,
+            options=self.options.transcription_options
+        )
         self.llm_processor = LLMProcessor(options=self.options.processing_options)
         
         logger.info(f"Initializing VoiceToTextAgent with options: {self.options}")
@@ -143,16 +154,30 @@ class VoiceToTextAgent:
                 "duration": transcription_result.duration,
             })
             
-            # Step 4: Process with LLM
-            logger.info("Step 4: Processing with LLM")
-            llm_span_id = telemetry.start_span(trace_id, "process_with_llm")
-            enhanced_result = self._process_with_llm(transcription_result.text, trace_id=trace_id)
-            
-            telemetry.end_span(llm_span_id, {
-                "enhanced_text_length": len(enhanced_result.enhanced_text),
-                "has_summary": enhanced_result.summary is not None,
-                "summary_length": len(enhanced_result.summary) if enhanced_result.summary else 0,
-            })
+            # Step 4: Process with LLM (if not skipped)
+            if not self.options.skip_llm_processing:
+                logger.info("Step 4: Processing with LLM")
+                llm_span_id = telemetry.start_span(trace_id, "process_with_llm")
+                enhanced_result = self._process_with_llm(transcription_result.text, trace_id=trace_id)
+                
+                telemetry.end_span(llm_span_id, {
+                    "enhanced_text_length": len(enhanced_result.enhanced_text),
+                    "has_summary": enhanced_result.summary is not None,
+                    "summary_length": len(enhanced_result.summary) if enhanced_result.summary else 0,
+                })
+            else:
+                logger.info("Step 4: Skipping LLM processing as requested")
+                # Create a simple enhanced result with the raw transcription
+                from ..llm.processor import EnhancedText
+                enhanced_result = EnhancedText(
+                    original_text=transcription_result.text,
+                    enhanced_text=transcription_result.text,
+                    summary=None,
+                    metadata={
+                        "skipped_llm_processing": True,
+                        "transcription_mode": self.options.transcription_mode
+                    }
+                )
             
             # Clean up intermediate files if not saving them
             if not self.options.save_intermediate_files:
@@ -173,6 +198,8 @@ class VoiceToTextAgent:
                     "transcription_confidence": transcription_result.confidence,
                     "language": transcription_result.language,
                     "audio_duration": transcription_result.duration,
+                    "transcription_mode": self.options.transcription_mode,
+                    "skipped_llm_processing": self.options.skip_llm_processing,
                     "trace_id": trace_id,  # Include trace ID in metadata for reference
                 }
             )

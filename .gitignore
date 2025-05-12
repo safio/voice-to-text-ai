@@ -61,7 +61,7 @@ temp/
 *.m4a
 # Uncomment the following line if you want to include test audio files
 # !examples/test_audio/*.m4a
-
+examples/*.*
 # Langfuse
 .langfuse/
 

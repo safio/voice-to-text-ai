@@ -1,14 +1,26 @@
+# Core dependencies
 pydub>=0.25.1
 ffmpeg-python>=0.2.0
 openai>=1.0.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
+click>=8.1.3
+loguru>=0.7.0
+tqdm>=4.65.0
+# Pin numpy to a version compatible with Whisper
+numpy<2.0.0
+
+# Whisper dependencies
+openai-whisper>=20231117
+torch>=2.0.0
+numba>=0.57.0
+
+# UI dependencies
+streamlit>=1.22.0
+
+# Observability
+langfuse>=2.0.0
+
+# Development dependencies
 pytest>=7.0.0
 black>=23.0.0
-streamlit>=1.22.0
-numpy>=1.22.0
-tqdm>=4.65.0
-loguru>=0.7.0
-openai-whisper>=20231117
-click>=8.1.3
-langfuse>=2.0.0

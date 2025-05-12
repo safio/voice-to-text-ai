@@ -44,6 +44,8 @@ class Telemetry:
         
         # Initialize Langfuse client if API keys are available
         self.langfuse = None
+        self._disabled = False
+        
         if self.public_key and self.secret_key:
             try:
                 self.langfuse = Langfuse(
@@ -54,10 +56,19 @@ class Telemetry:
                 logger.info("Langfuse telemetry initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize Langfuse: {str(e)}")
+                self._disabled = True
         else:
             logger.warning("Langfuse API keys not found, telemetry disabled")
+            self._disabled = True
         
         self._initialized = True
+        
+    def disable_telemetry(self):
+        """Disable telemetry to prevent further errors."""
+        if not self._disabled:
+            logger.warning("Disabling telemetry due to errors")
+            self._disabled = True
+            self.langfuse = None
     
     def start_trace(self, name: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -72,17 +83,21 @@ class Telemetry:
         """
         trace_id = str(uuid.uuid4())
         
+        if self._disabled:
+            return trace_id
+            
         if self.langfuse:
             try:
+                # Create trace with error handling for API differences
                 trace = self.langfuse.trace(
                     name=name,
                     id=trace_id,
                     metadata=metadata or {}
                 )
-                logger.debug(f"Started trace: {name} ({trace_id})")
-                return trace.id
+                logger.debug(f"Started trace: {trace_id}")
             except Exception as e:
-                logger.error(f"Failed to start trace: {str(e)}")
+                logger.warning(f"Failed to start trace: {str(e)}")
+                self.disable_telemetry()
         
         return trace_id
     
@@ -107,19 +122,36 @@ class Telemetry:
         """
         span_id = str(uuid.uuid4())
         
+        if self._disabled:
+            return span_id
+            
         if self.langfuse:
             try:
-                span = self.langfuse.span(
-                    name=name,
-                    id=span_id,
-                    trace_id=trace_id,
-                    parent_id=parent_id,
-                    metadata=metadata or {}
-                )
-                logger.debug(f"Started span: {name} ({span_id})")
-                return span.id
+                # Try to create a span using the trace object first (new API)
+                try:
+                    trace = self.langfuse.get_trace(trace_id)
+                    if trace:
+                        span = trace.span(
+                            name=name,
+                            id=span_id,
+                            parent_id=parent_id,
+                            metadata=metadata or {}
+                        )
+                        logger.debug(f"Started span using trace object: {span_id}")
+                        return span_id
+                except (AttributeError, Exception):
+                    # Fall back to direct span creation (old API)
+                    span = self.langfuse.span(
+                        name=name,
+                        id=span_id,
+                        trace_id=trace_id,
+                        parent_id=parent_id,
+                        metadata=metadata or {}
+                    )
+                    logger.debug(f"Started span: {span_id}")
             except Exception as e:
-                logger.error(f"Failed to start span: {str(e)}")
+                logger.warning(f"Failed to start span: {str(e)}")
+                self.disable_telemetry()
         
         return span_id
     
@@ -131,16 +163,35 @@ class Telemetry:
             span_id (str): ID of the span to end.
             metadata (Optional[Dict[str, Any]]): Additional metadata to add upon completion.
         """
+        if self._disabled:
+            return
+            
         if self.langfuse:
             try:
-                self.langfuse.update_span(
-                    id=span_id,
-                    metadata=metadata or {},
-                    end=True
-                )
+                # Check which API version is available
+                if hasattr(self.langfuse, 'update_span'):
+                    # Old API
+                    self.langfuse.update_span(
+                        id=span_id,
+                        metadata=metadata or {},
+                        end=True
+                    )
+                elif hasattr(self.langfuse, 'span'):
+                    # New API
+                    span = self.langfuse.span(span_id)
+                    if metadata:
+                        span.update(metadata=metadata)
+                    span.end()
+                else:
+                    # Fallback - just log that we can't end the span
+                    logger.warning(f"Cannot end span {span_id}: Langfuse API methods not found")
+                    self.disable_telemetry()
+                    return
+                    
                 logger.debug(f"Ended span: {span_id}")
             except Exception as e:
-                logger.error(f"Failed to end span: {str(e)}")
+                logger.warning(f"Failed to end span: {str(e)}")
+                self.disable_telemetry()
     
     def track_llm(
         self,
@@ -175,25 +226,48 @@ class Telemetry:
         """
         generation_id = str(uuid.uuid4())
         
+        if self._disabled:
+            return generation_id
+            
         if self.langfuse:
             try:
-                generation = self.langfuse.generation(
-                    name=name,
-                    id=generation_id,
-                    trace_id=trace_id,
-                    parent_id=parent_id,
-                    model=model,
-                    prompt=prompt,
-                    completion=completion,
-                    metadata=metadata or {},
-                    input_cost=input_cost,
-                    output_cost=output_cost,
-                    total_cost=total_cost
-                )
-                logger.debug(f"Tracked LLM call: {name} ({generation_id})")
-                return generation.id
+                # Try to create a generation using the trace object first (new API)
+                try:
+                    trace = self.langfuse.get_trace(trace_id)
+                    if trace:
+                        generation = trace.generation(
+                            name=name,
+                            id=generation_id,
+                            parent_id=parent_id,
+                            model=model,
+                            prompt=prompt,
+                            completion=completion,
+                            metadata=metadata or {},
+                            input_cost=input_cost,
+                            output_cost=output_cost,
+                            total_cost=total_cost
+                        )
+                        logger.debug(f"Tracked LLM call using trace object: {generation_id}")
+                        return generation_id
+                except (AttributeError, Exception):
+                    # Fall back to direct generation creation (old API)
+                    generation = self.langfuse.generation(
+                        name=name,
+                        id=generation_id,
+                        trace_id=trace_id,
+                        parent_id=parent_id,
+                        model=model,
+                        prompt=prompt,
+                        completion=completion,
+                        metadata=metadata or {},
+                        input_cost=input_cost,
+                        output_cost=output_cost,
+                        total_cost=total_cost
+                    )
+                    logger.debug(f"Tracked LLM call: {generation_id}")
             except Exception as e:
-                logger.error(f"Failed to track LLM call: {str(e)}")
+                logger.warning(f"Failed to track LLM call: {str(e)}")
+                self.disable_telemetry()
         
         return generation_id
     
@@ -213,24 +287,41 @@ class Telemetry:
             value (float): Score value (typically between 0 and 1).
             comment (Optional[str]): Comment explaining the score.
         """
+        if self._disabled:
+            return
+            
         if self.langfuse:
             try:
-                self.langfuse.score(
-                    trace_id=trace_id,
-                    name=name,
-                    value=value,
-                    comment=comment
-                )
-                logger.debug(f"Tracked score: {name}={value} for trace {trace_id}")
+                # Try to create a score using the trace object first (new API)
+                try:
+                    trace = self.langfuse.get_trace(trace_id)
+                    if trace:
+                        score = trace.score(
+                            name=name,
+                            value=value,
+                            comment=comment
+                        )
+                        logger.debug(f"Tracked score using trace object: {name}={value}")
+                        return
+                except (AttributeError, Exception):
+                    # Fall back to direct score creation (old API)
+                    score = self.langfuse.score(
+                        trace_id=trace_id,
+                        name=name,
+                        value=value,
+                        comment=comment
+                    )
+                    logger.debug(f"Tracked score: {name}={value}")
             except Exception as e:
-                logger.error(f"Failed to track score: {str(e)}")
+                logger.warning(f"Failed to track score: {str(e)}")
+                self.disable_telemetry()
     
     def track_event(
         self,
         trace_id: str,
         name: str,
         metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
+    ):
         """
         Track a discrete event within a trace.
         
@@ -239,33 +330,53 @@ class Telemetry:
             name (str): Name of the event.
             metadata (Optional[Dict[str, Any]]): Additional metadata for the event.
         """
+        if self._disabled:
+            return
+            
         if self.langfuse:
             try:
-                self.langfuse.event(
-                    trace_id=trace_id,
-                    name=name,
-                    metadata=metadata or {}
-                )
-                logger.debug(f"Tracked event: {name} for trace {trace_id}")
+                # Try to create an event using the trace object first (new API)
+                try:
+                    trace = self.langfuse.get_trace(trace_id)
+                    if trace:
+                        event = trace.event(
+                            name=name,
+                            metadata=metadata or {}
+                        )
+                        logger.debug(f"Tracked event using trace object: {name}")
+                        return
+                except (AttributeError, Exception):
+                    # Fall back to direct event creation (old API)
+                    event = self.langfuse.event(
+                        trace_id=trace_id,
+                        name=name,
+                        metadata=metadata or {}
+                    )
+                    logger.debug(f"Tracked event: {name}")
             except Exception as e:
-                logger.error(f"Failed to track event: {str(e)}")
+                logger.warning(f"Failed to track event: {str(e)}")
+                self.disable_telemetry()
     
     def flush(self) -> None:
         """
         Flush any pending telemetry data to ensure it's sent to Langfuse.
         """
+        if self._disabled:
+            return
+            
         if self.langfuse:
             try:
                 self.langfuse.flush()
                 logger.debug("Flushed telemetry data")
             except Exception as e:
-                logger.error(f"Failed to flush telemetry data: {str(e)}")
+                logger.warning(f"Failed to flush telemetry data: {str(e)}")
+                self.disable_telemetry()
 
 
 # Create a singleton instance
 telemetry = Telemetry()
 
-
+# ... (rest of the code remains the same)
 # Decorator for observing functions
 def observe_function(name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
     """
